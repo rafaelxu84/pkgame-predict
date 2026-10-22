@@ -5,12 +5,11 @@ Live Polymarket market data, demo bets only (no real money, no wallet). Owner: R
 
 ## Status
 - 2026-10-22: tested end to end against live Polymarket data on the local server (widths 1024, 1440, 390): list, all 11 categories, 4 sorts, load more, search, detail (negRisk set, live esports game, price ladder), chart ranges, book, demo bet, cash-out, My bets, EN/中文, How it works, slip edge cases. No console errors. Bugs found are fixed in commit 0721069.
-- NOT yet pushed: no remote. Rafa chose his **personal** GitHub account (not the Spolith org). This Mac has no Homebrew; gh 2.103.0 is installed at `~/.local/bin/gh` (not on PATH). `gh auth login` was started but not finished.
-- Next steps:
-  1. `~/.local/bin/gh auth status`, then `~/.local/bin/gh repo create pkgame-predict --public --source=. --push`
-  2. Enable GitHub Pages (branch `main`, root): `~/.local/bin/gh api -X POST repos/<owner>/pkgame-predict/pages -f "source[branch]=main" -f "source[path]=/"`
-  3. Smoke-test the Pages URL with live data (same checklist, plus a real phone).
-- Local commits are authored `Rafa <rafa@Rafaels-MacBook-Pro.local>` (no git user.email set), so GitHub won't link them to Rafa's account.
+- Published on Rafa's **personal** GitHub account (not the Spolith org): repo https://github.com/rafaelxu84/pkgame-predict (public), GitHub Pages from `main` root → https://rafaelxu84.github.io/pkgame-predict/ . Pushing to `main` redeploys Pages in ~1 min.
+- Same checklist re-run on the Pages URL with live data (incl. bet + cash-out on a live CS2 match, 中文, 390 width): all OK.
+- This Mac has no Homebrew; gh 2.103.0 is at `~/.local/bin/gh` (not on PATH), logged in as `rafaelxu84`, and is git's credential helper for github.com.
+- Commits are authored `Rafa <rafa@Rafaels-MacBook-Pro.local>` (no git user.email set), so GitHub doesn't link them to Rafa's account.
+- Not yet checked: a real phone; auto-settlement of a demo bet when Polymarket resolves the market.
 
 ## Stack
 Plain static site, no build. ES modules. Run locally: `python3 -m http.server 8000`.

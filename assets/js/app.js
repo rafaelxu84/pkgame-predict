@@ -461,11 +461,13 @@ function drawChart() {
   const d = S.detail;
   if (!host || !d) return;
   if (!d.history) return;
+  // a market opened today has under a day of history even on 1W/1M/ALL; label those axes by time too
+  const shortSpan = d.history.length > 1 && Date.now() - d.history[0].t < 2 * 864e5;
   const fmtX = (ms, full) => {
     const dt = new Date(ms);
     const loc = getLang() === 'zh' ? 'zh-CN' : 'en-US';
     if (full) return dt.toLocaleString(loc, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-    return d.range === '1D' ? dt.toLocaleTimeString(loc, { hour: '2-digit', minute: '2-digit' }) : dt.toLocaleDateString(loc, { month: 'short', day: 'numeric' });
+    return d.range === '1D' || shortSpan ? dt.toLocaleTimeString(loc, { hour: '2-digit', minute: '2-digit' }) : dt.toLocaleDateString(loc, { month: 'short', day: 'numeric' });
   };
   // price history lags too; end the line at the live chance shown above it
   const now = selectedMarket().prices[0];
