@@ -26,6 +26,7 @@ const SORT_KEYS = ['volume', 'liquidity', 'ending', 'new'];
 const PAGE = 24;
 const DETAIL_REFRESH_S = 15;
 const LIST_REFRESH_S = 60;
+const BOOK_TTL_MS = 45000;
 
 // ---------------------------------------------------------------- state
 
@@ -45,6 +46,7 @@ const S = {
   feedOk: null,
   timers: [],
   marketIndex: new Map(), // marketId -> { event, market }
+  books: new Map(), // marketId -> { oi, book, at } — live CLOB books, fresher than Gamma
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -63,8 +65,26 @@ const ICON = {
 function clearTimers() { S.timers.forEach(clearInterval); S.timers = []; }
 function every(sec, fn) { S.timers.push(setInterval(() => { if (!document.hidden) fn(); }, sec * 1000)); }
 
+// Gamma's prices can trail the CLOB by a minute or more, so any market with a recently
+// fetched book keeps trading at that book when fresh Gamma data arrives.
 function indexEvents(events) {
-  events.forEach((e) => e.markets.forEach((m) => S.marketIndex.set(m.id, { event: e, market: m })));
+  events.forEach((e) => e.markets.forEach((m) => {
+    const lb = S.books.get(m.id);
+    if (lb && !m.closed && Date.now() - lb.at < BOOK_TTL_MS) Object.assign(m, api.bookPrices(m, lb.oi, lb.book));
+    S.marketIndex.set(m.id, { event: e, market: m });
+  }));
+}
+
+function useBook(m, oi, book) {
+  S.books.set(m.id, { oi, book, at: Date.now() });
+  Object.assign(m, api.bookPrices(m, oi, book));
+}
+
+async function fetchBook(m, oi) {
+  const book = await api.getBook(m.tokens[oi]);
+  // apply to whatever object currently represents this market (a refresh may have replaced it)
+  useBook(S.marketIndex.get(m.id)?.market || m, oi, book);
+  return book;
 }
 
 // ---------------------------------------------------------------- toasts
@@ -145,9 +165,9 @@ function imgTag(src, cls) {
 // ---------------------------------------------------------------- list view
 
 function eventCard(e) {
-  // One headline market (single market, or a game whose first market is the moneyline) → big buttons.
-  const binary = e.markets.length === 1 || !e.negRisk;
-  const m0 = binary ? (e.openMarkets[0] || e.markets[0]) : e.markets[0];
+  // One headline market (single market, or a game's moneyline) → big buttons; sets and ladders → rows.
+  const binary = e.markets.length === 1 || (!e.negRisk && e.isGame);
+  const m0 = binary ? e.main : e.markets[0];
   const yesNo = m0.outcomes[0] === 'Yes';
   const extra = binary ? e.markets.length - 1 : 0;
   const head = `
@@ -160,11 +180,16 @@ function eventCard(e) {
   if (binary) {
     body = `<div class="mcard-odds">${m0.outcomes.slice(0, 2).map((_, i) => oddsButton(e, m0, i)).join('')}</div>`;
   } else {
-    const top = e.openMarkets.slice(0, 3);
+    // sets: the 3 likeliest; ladders: the 3 strikes closest to 50%, kept in Polymarket's order
+    const evenness = (m) => Math.abs((m.prices[0] ?? 0) - 0.5);
+    const top = e.negRisk
+      ? e.openMarkets.slice(0, 3)
+      : [...e.openMarkets].sort((a, b) => evenness(a) - evenness(b)).slice(0, 3)
+        .sort((a, b) => e.openMarkets.indexOf(a) - e.openMarkets.indexOf(b));
     const more = e.openMarkets.length - top.length;
     body = `<ul class="mcard-outcomes">${top.map((m) => `
       <li>
-        <span class="mo-label">${esc(m.label)}</span>
+        <span class="mo-label" lang="en">${esc(m.label)}</span>
         <span class="mo-pct num">${fmtPct(m.prices[0])}</span>
         ${oddsButton(e, m, 0, { compact: true })}${oddsButton(e, m, 1, { compact: true })}
       </li>`).join('')}</ul>
@@ -243,8 +268,9 @@ async function loadList({ append = false, silent = false } = {}) {
       S.hasMore = false;
     } else {
       const cat = CATS.find((c) => c.key === S.cat) || CATS[0];
-      rows = await api.listEvents({ tag: cat.tag, sort: S.sort, limit: PAGE, offset: append ? S.offset : 0 });
-      S.hasMore = rows.length >= PAGE - 4;
+      const page = await api.listEvents({ tag: cat.tag, sort: S.sort, limit: PAGE, offset: append ? S.offset : 0 });
+      rows = page.events;
+      S.hasMore = page.fetched >= PAGE;
     }
     indexEvents(rows);
     if (append) {
@@ -441,19 +467,29 @@ function drawChart() {
     if (full) return dt.toLocaleString(loc, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     return d.range === '1D' ? dt.toLocaleTimeString(loc, { hour: '2-digit', minute: '2-digit' }) : dt.toLocaleDateString(loc, { month: 'short', day: 'numeric' });
   };
-  renderChart(host, d.history, { fmtX, fmtY: (p) => `${Math.round(p * 100)}%`, label: t('chart') });
+  // price history lags too; end the line at the live chance shown above it
+  const now = selectedMarket().prices[0];
+  const pts = d.history.length && now > 0 ? [...d.history, { t: Date.now(), p: now }] : d.history;
+  renderChart(host, pts, { fmtX, fmtY: (p) => `${Math.round(p * 100)}%`, label: t('chart') });
 }
 
 async function loadBook() {
   const d = S.detail;
   const m = selectedMarket();
-  const token = m.tokens[d.oi];
-  if (!token) return;
+  const oi = d.oi;
+  if (!m.tokens[oi]) return;
+  let book;
   try {
-    d.book = await api.getBook(token);
-  } catch { d.book = { bids: [], asks: [], last: null }; }
+    book = await fetchBook(m, oi);
+  } catch { book = { bids: [], asks: [], last: null }; }
+  // the player may have picked another market or side while this was loading
+  if (S.detail !== d || selectedMarket().id !== m.id || d.oi !== oi) return;
+  d.book = book;
   const host = $('#book');
-  if (host && S.detail === d) host.innerHTML = bookHTML();
+  if (host) host.innerHTML = bookHTML();
+  patchDetailNumbers();
+  drawChart();
+  syncSlipPrice();
 }
 
 async function loadHistory() {
@@ -501,6 +537,8 @@ function patchDetailNumbers() {
       if (v && v.textContent !== next) {
         btn.dataset.movement = parseFloat(next) > parseFloat(v.textContent) ? 'up' : 'down';
         v.textContent = next;
+        btn.setAttribute('aria-label', `${outcomeName(x.outcomes[i])} · ${x.label} · ${next}`);
+        btn.disabled = !x.accepting || !x.buy[i];
         setTimeout(() => btn.removeAttribute('data-movement'), 2400);
       }
     });
@@ -519,7 +557,7 @@ async function showDetail(slug) {
     d.event = e;
     indexEvents([e]);
     e.markets.forEach((m) => store.settle(m.id, m.prices, m.closed));
-    d.marketId = (e.openMarkets[0] || e.markets[0]).id;
+    d.marketId = e.main.id;
     S.feedOk = true;
     renderDetail();
     loadHistory();
@@ -555,9 +593,23 @@ function openSlip(mid, oi) {
   renderSlip();
   document.querySelectorAll('.app-odds').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mid === mid && +b.dataset.oi === oi)));
   setTimeout(() => $('#stake-input')?.focus({ preventScroll: true }), 50);
+  watchSlipBook();
+}
+
+// Keep the slip priced off the live book while it is open (list cards only carry Gamma prices).
+function watchSlipBook() {
+  clearInterval(S.slipTimer);
+  const tick = () => {
+    const slip = S.slip;
+    if (!slip || document.hidden) return;
+    fetchBook(slip.market, slip.oi).then(() => { if (S.slip === slip) syncSlipPrice(); }).catch(() => {});
+  };
+  tick();
+  S.slipTimer = setInterval(tick, DETAIL_REFRESH_S * 1000);
 }
 
 function closeSlip() {
+  clearInterval(S.slipTimer);
   S.slip = null;
   const slip = $('#slip');
   slip.hidden = true;
@@ -673,32 +725,40 @@ function placeBet() {
 async function showBets() {
   S.view = 'bets';
   setNav('bets');
-  const st = store.getState();
-  const open = st.positions.filter((p) => p.status === 'open');
-  // fetch live prices for open positions (one call per event)
-  const slugs = [...new Set(open.map((p) => p.eventSlug))].slice(0, 20);
   renderBets();
-  if (slugs.length) {
-    await Promise.all(slugs.map((s) => api.getEvent(s).then((e) => {
-      indexEvents([e]);
-      e.markets.forEach((m) => store.settle(m.id, m.prices, m.closed));
-    }).catch(() => {})));
-    if (S.view === 'bets') renderBets();
-    renderStatus();
-  }
-  every(DETAIL_REFRESH_S * 2, async () => {
-    const live = [...new Set(store.getState().positions.filter((p) => p.status === 'open').map((p) => p.eventSlug))].slice(0, 20);
-    await Promise.all(live.map((s) => api.getEvent(s).then((e) => indexEvents([e])).catch(() => {})));
-    if (S.view === 'bets') renderBets();
-  });
+  await refreshPositions();
+  every(DETAIL_REFRESH_S * 2, refreshPositions);
+}
+
+// Live prices for open positions: one Gamma call per event (also settles resolved markets),
+// then the book of each open market so cash-out uses the live bid.
+async function refreshPositions() {
+  const open = () => store.getState().positions.filter((p) => p.status === 'open');
+  const slugs = [...new Set(open().map((p) => p.eventSlug))].slice(0, 20);
+  if (!slugs.length) return;
+  const ok = await Promise.all(slugs.map((s) => api.getEvent(s).then((e) => {
+    indexEvents([e]);
+    e.markets.forEach((m) => store.settle(m.id, m.prices, m.closed));
+    return true;
+  }).catch(() => false)));
+  S.feedOk = ok.some(Boolean);
+  const sides = new Map(open().map((p) => [p.marketId, p.outcomeIndex]));
+  await Promise.all([...sides].map(([mid, oi]) => {
+    const hit = S.marketIndex.get(mid);
+    return hit && !hit.market.closed ? fetchBook(hit.market, oi).catch(() => {}) : null;
+  }));
+  if (S.view === 'bets') renderBets();
+  renderStatus();
 }
 
 function bidFor(p) {
   const hit = S.marketIndex.get(p.marketId);
   if (!hit) return null;
   const m = hit.market;
-  if (p.outcomeIndex === 0) return m.bestBid ?? m.prices[0];
-  return m.bestAsk ? +(1 - m.bestAsk).toFixed(4) : m.prices[1];
+  if (m.bestBid === null && m.bestAsk === null) return m.prices[p.outcomeIndex] ?? null;
+  // Cash-out sells into the bids: outcome 0 at best bid, outcome 1 at (1 - best ask). Empty side → null.
+  if (p.outcomeIndex === 0) return m.bestBid || null;
+  return m.bestAsk !== null && m.bestAsk < 1 ? +(1 - m.bestAsk).toFixed(4) : null;
 }
 
 function renderBets() {
@@ -791,8 +851,16 @@ document.addEventListener('click', (ev) => {
     renderDetail(); loadHistory(); loadBook();
   } else if (act === 'cashout') {
     const p = store.getState().positions.find((x) => x.id === el.dataset.id);
-    const bid = p && bidFor(p);
-    if (bid) { const v = store.cashOut(p.id, bid); toast(t('cashedOut', { v: v.toFixed(2) })); renderBets(); }
+    const hit = p && S.marketIndex.get(p.marketId);
+    if (!hit) return;
+    el.disabled = true;
+    // sell at the bid as it is now, not as of the last refresh
+    fetchBook(hit.market, p.outcomeIndex).catch(() => {}).then(() => {
+      const bid = bidFor(p);
+      const v = bid && store.cashOut(p.id, bid);
+      if (v) toast(t('cashedOut', { v: v.toFixed(2) }));
+      if (S.view === 'bets') renderBets();
+    });
   } else if (act === 'type') {
     S.detail.typeKey = el.dataset.k;
     renderDetail();

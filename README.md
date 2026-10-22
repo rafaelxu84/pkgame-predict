@@ -21,6 +21,7 @@ A feasibility prototype for Polymarket-style prediction markets on PK.GAME. Live
 - `GET https://gamma-api.polymarket.com/events` — 列表，`tag_slug` 筛分类，`order` 排序
 - `GET https://gamma-api.polymarket.com/public-search` — 搜索
 - `GET https://clob.polymarket.com/book?token_id=` — 盘口
+- `GET https://clob.polymarket.com/last-trade-price?token_id=` — 最新成交价（`/book` 里的 `last_trade_price` 是同一市场两边共用的，可能是另一边的价格）
 - `GET https://clob.polymarket.com/prices-history?market=&interval=&fidelity=` — 走势
 - `GET https://polymarket.com/api/geoblock` — 地区检测
 
@@ -57,4 +58,5 @@ assets/
 - 市场标题和规则是 Polymarket 原文（英文），没有翻译。
 - 数据直接从浏览器拉取，没有服务端缓存；正式版需要后端代理、缓存和 WebSocket 实时推送。
 - 演示下注不占用盘口深度，大额也按最优价成交。
+- Gamma 的价格会比 CLOB 慢一分钟以上（比赛进行中能差 15¢），所以详情页选中的盘口、下注单和持仓都改用 CLOB 实时盘口定价；列表卡片上的价格仍是 Gamma 的，最多每 60 秒刷新。
 - 只做了展示和模拟，不涉及真钱、钱包或 Polymarket 下单。

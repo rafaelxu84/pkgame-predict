@@ -26,7 +26,7 @@ const STR = {
     moreMarkets: '+{n} markets',
     showAll: 'Show all {n}',
     showLess: 'Show less',
-    type_moneyline: 'Winner', type_child_moneyline: 'Winner', type_spreads: 'Spread', type_totals: 'Totals', type_both_teams_to_score: 'Both teams score',
+    type_moneyline: 'Winner', type_child_moneyline: 'Game winner', type_spreads: 'Spread', type_totals: 'Totals', type_both_teams_to_score: 'Both teams score',
     type_first_half_moneyline: '1st half winner', type_first_half_spreads: '1st half spread', type_first_half_totals: '1st half totals',
     yes: 'Yes', no: 'No',
     // detail
@@ -119,7 +119,7 @@ const STR = {
     moreMarkets: '另有 {n} 个玩法',
     showAll: '显示全部 {n} 个',
     showLess: '收起',
-    type_moneyline: '胜负', type_child_moneyline: '胜负', type_spreads: '让分', type_totals: '大小', type_both_teams_to_score: '双方进球',
+    type_moneyline: '胜负', type_child_moneyline: '单局胜负', type_spreads: '让分', type_totals: '大小', type_both_teams_to_score: '双方进球',
     type_first_half_moneyline: '上半场胜负', type_first_half_spreads: '上半场让分', type_first_half_totals: '上半场大小',
     yes: '是', no: '否',
     back: '返回',
@@ -198,6 +198,12 @@ export function setLang(l) {
   lang = l === 'zh' ? 'zh' : 'en';
   try { localStorage.setItem('pkp.lang', lang); } catch { /* ignore */ }
   document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+  // ?lang= wins on load, so keep it in step with the toggle or a reload switches back
+  const url = new URL(location.href);
+  if (url.searchParams.has('lang') && url.searchParams.get('lang') !== lang) {
+    url.searchParams.set('lang', lang);
+    history.replaceState(history.state, '', url);
+  }
 }
 
 export function t(key, vars = {}) {
@@ -233,7 +239,7 @@ export function fmtPct(p) {
 
 export function fmtCents(p) {
   if (p === null || p === undefined || Number.isNaN(p)) return '–';
-  const c = p * 100;
+  const c = Math.round(p * 1e4) / 100; // drop float noise like 0.09 - 0.08 = 0.00999…
   return `${c < 1 || c > 99 ? c.toFixed(1) : Math.round(c * 10) / 10}¢`;
 }
 

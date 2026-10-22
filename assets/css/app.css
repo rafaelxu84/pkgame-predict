@@ -96,7 +96,8 @@ img { display: block; }
 .app-select select:disabled { opacity: .4; cursor: not-allowed; }
 .search-note { display: flex; align-items: center; gap: var(--sp-2); color: var(--fg-2); font-size: 14px; }
 
-.market-grid { display: grid; gap: var(--sp-3); grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
+/* 340px keeps ~110px+ for outcome names next to two odds buttons (3 columns at 1440, 2 at 1024) */
+.market-grid { display: grid; gap: var(--sp-3); grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); }
 @media (min-width: 768px) { .market-grid { gap: var(--sp-4); } }
 
 .mcard { padding: var(--sp-4); gap: var(--sp-3); cursor: pointer; }
@@ -129,9 +130,10 @@ img { display: block; }
 .app-odds.is-compact > span:first-child { font-size: 12px !important; }
 .app-odds.is-compact > span:last-child { font-size: 13px; }
 
-.mcard-outcomes { display: grid; gap: var(--sp-1); }
+.mcard-outcomes { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-1); }
 .mcard-outcomes li { display: flex; align-items: center; gap: var(--sp-2); min-height: 44px; }
-.mo-label { flex: 1; min-width: 0; font-size: 14px; color: var(--fg-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mo-label { flex: 1; min-width: 0; font-size: 14px; line-height: 18px; color: var(--fg-1); overflow: hidden; overflow-wrap: break-word; hyphens: auto;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .mo-pct { font-weight: 700; color: var(--fg-0); font-size: 14px; min-width: 40px; text-align: right; }
 .mcard-more { font-size: 13px; font-weight: 600; text-decoration: none; }
 .mcard-foot { margin-top: auto; display: flex; justify-content: space-between; gap: var(--sp-2); font-size: 12px; line-height: 16px; color: var(--fg-3); }
@@ -185,6 +187,11 @@ img { display: block; }
 @media (min-width: 1024px) {
   .detail-grid { grid-template-columns: minmax(0, 1fr) 360px; align-items: start; }
   .detail-side { position: sticky; top: calc(var(--app-header-h) + var(--sp-4)); }
+}
+/* the open slip takes 400px; below 1280 that leaves too little for two columns */
+@media (min-width: 1024px) and (max-width: 1279px) {
+  body.has-slip .detail-grid { grid-template-columns: minmax(0, 1fr); }
+  body.has-slip .detail-side { position: static; }
 }
 
 .chart-now { display: flex; align-items: baseline; gap: var(--sp-2); margin-top: 2px; }

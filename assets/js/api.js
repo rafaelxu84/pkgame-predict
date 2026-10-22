@@ -46,22 +46,25 @@ const parseArr = (v) => {
 };
 const num = (v) => (v === undefined || v === null || v === '' ? null : Number(v));
 
+// Price to BUY each outcome. Outcome 0 buys at best ask; outcome 1 buys at (1 - best bid).
+// bestAsk = 1 or bestBid = 0/null means that side of the book is empty → nothing to buy (null).
+function buyPrices(outcomes, prices, bestBid, bestAsk, hasBook) {
+  const ok = (p) => (p > 0 && p < 0.999 ? +p.toFixed(4) : null);
+  return outcomes.map((_, i) => {
+    if (!hasBook) return ok(prices[i]);
+    if (i === 0) return bestAsk !== null ? ok(bestAsk) : null;
+    if (i === 1) return bestBid ? ok(1 - bestBid) : null;
+    return ok(prices[i]);
+  });
+}
+
 export function normMarket(m) {
   const outcomes = parseArr(m.outcomes);
   const prices = parseArr(m.outcomePrices).map(Number);
   const tokens = parseArr(m.clobTokenIds);
   const bestBid = num(m.bestBid);
   const bestAsk = num(m.bestAsk);
-  // Price to BUY each outcome. Outcome 0 buys at best ask; outcome 1 buys at (1 - best bid).
-  // bestAsk = 1 or bestBid = 0/null means that side of the book is empty → nothing to buy (null).
-  const hasBook = bestBid !== null || bestAsk !== null;
-  const ok = (p) => (p > 0 && p < 0.999 ? +p.toFixed(4) : null);
-  const buy = outcomes.map((_, i) => {
-    if (!hasBook) return ok(prices[i]);
-    if (i === 0) return bestAsk !== null ? ok(bestAsk) : null;
-    if (i === 1) return bestBid ? ok(1 - bestBid) : null;
-    return ok(prices[i]);
-  });
+  const buy = buyPrices(outcomes, prices, bestBid, bestAsk, bestBid !== null || bestAsk !== null);
   return {
     id: m.id,
     slug: m.slug,
@@ -98,8 +101,19 @@ export function normEvent(e) {
   // Hide markets that never opened; keep closed ones so resolved outcomes still show.
   const shown = markets.filter((m) => m.tokens.length && (m.active || m.closed));
   // Mutually-exclusive sets (negRisk, e.g. "Who wins…?") read best sorted by chance.
-  // Everything else (e.g. a game with moneyline / spreads / totals) keeps Polymarket's order: main market first.
+  // Everything else (e.g. a game with moneyline / spreads / totals, or a price ladder) keeps Polymarket's order.
   if (e.negRisk) shown.sort((a, b) => (b.prices[0] || 0) - (a.prices[0] || 0));
+  const openMarkets = shown.filter((m) => !m.closed);
+  const isGame = shown.some((m) => m.type);
+  // Headline market for cards and the detail page:
+  // - games: the open 'moneyline' (esports list per-game winners before the series winner)
+  // - ladders (price or date strikes that aren't one exclusive set): the strike closest to 50%
+  // - otherwise the first open market (negRisk sets are sorted by chance)
+  const evenness = (m) => Math.abs((m.prices[0] ?? 0) - 0.5);
+  const ladder = !e.negRisk && !isGame && openMarkets.length > 1;
+  const main = (!e.negRisk && isGame && openMarkets.find((m) => m.type === 'moneyline'))
+    || (ladder && openMarkets.reduce((a, b) => (evenness(b) < evenness(a) ? b : a)))
+    || openMarkets[0] || shown[0];
   return {
     id: e.id,
     slug: e.slug,
@@ -115,7 +129,9 @@ export function normEvent(e) {
     negRisk: !!e.negRisk,
     tags: (e.tags || []).map((t) => ({ slug: t.slug, label: t.label })),
     markets: shown,
-    openMarkets: shown.filter((m) => !m.closed),
+    openMarkets,
+    main,
+    isGame,
   };
 }
 
@@ -136,8 +152,13 @@ export async function listEvents({ tag = '', sort = 'volume', limit = 24, offset
   };
   if (sort === 'ending') params.end_date_min = new Date().toISOString();
   const data = await getJSON(`${ENDPOINTS.gamma}/events?${qs(params)}`);
-  return data.map(normEvent).filter((e) => e.markets.length);
+  // `fetched` (before filtering) tells the caller whether another page exists
+  return { events: data.map(normEvent).filter(isTradable), fetched: data.length };
 }
+
+// Gamma keeps finished games "active" for a while (all markets closed, or only empty-book props
+// left), so lists skip events with nothing to buy. Their detail pages still open from a link.
+const isTradable = (e) => e.openMarkets.some((m) => m.accepting && m.buy.some(Boolean));
 
 export async function getEvent(slug) {
   const data = await getJSON(`${ENDPOINTS.gamma}/events?${qs({ slug })}`);
@@ -147,15 +168,38 @@ export async function getEvent(slug) {
 
 export async function search(q) {
   const data = await getJSON(`${ENDPOINTS.gamma}/public-search?${qs({ q, limit_per_type: 20, events_status: 'active' })}`);
-  return (data.events || []).map(normEvent).filter((e) => e.markets.length);
+  return (data.events || []).map(normEvent).filter(isTradable);
 }
 
 export async function getBook(tokenId) {
-  const b = await getJSON(`${ENDPOINTS.clob}/book?${qs({ token_id: tokenId })}`);
+  // The book's own last_trade_price is shared by both tokens of a market (it can be the other
+  // side's price), so the last trade comes from the per-token endpoint.
+  const [b, lt] = await Promise.all([
+    getJSON(`${ENDPOINTS.clob}/book?${qs({ token_id: tokenId })}`),
+    getJSON(`${ENDPOINTS.clob}/last-trade-price?${qs({ token_id: tokenId })}`).catch(() => null),
+  ]);
   // CLOB returns bids ascending and asks descending — best level is last in both.
   const bids = (b.bids || []).map((l) => ({ p: +l.price, s: +l.size })).sort((x, y) => y.p - x.p);
   const asks = (b.asks || []).map((l) => ({ p: +l.price, s: +l.size })).sort((x, y) => x.p - y.p);
-  return { bids, asks, tick: +b.tick_size || 0.01, last: b.last_trade_price ? +b.last_trade_price : null };
+  return { bids, asks, tick: +b.tick_size || 0.01, last: lt && +lt.price > 0 ? +lt.price : null };
+}
+
+// Gamma's bestBid/bestAsk can trail the CLOB by a minute or more, which is too slow for
+// in-play games. Re-derive a market's prices from a live book for its outcome `oi` token.
+export function bookPrices(m, oi, book) {
+  const bid = book.bids.length ? book.bids[0].p : null;
+  const ask = book.asks.length ? book.asks[0].p : null;
+  // Outcome 1's book mirrors outcome 0's: its bids are outcome-0 asks at 1 - p, and vice versa.
+  const flip = (p) => (p === null ? null : +(1 - p).toFixed(4));
+  const bestBid = oi === 0 ? bid : flip(ask);
+  const bestAsk = oi === 0 ? ask : flip(bid);
+  const patch = { bestBid, bestAsk, buy: buyPrices(m.outcomes, m.prices, bestBid, bestAsk, true) };
+  // Chance = midpoint while the spread is tight (≤ 10¢, as polymarket.com does); else keep Gamma's.
+  if (bestBid !== null && bestAsk !== null && bestAsk - bestBid <= 0.1) {
+    const mid = +((bestBid + bestAsk) / 2).toFixed(4);
+    patch.prices = [mid, flip(mid)];
+  }
+  return patch;
 }
 
 export const RANGES = {
